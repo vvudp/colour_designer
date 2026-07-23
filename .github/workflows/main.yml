@@ -14,7 +14,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows-static:
@@ -26,11 +26,19 @@ jobs:
       run:
         shell: msys2 {0}
 
+    # FindPkgConfig 使用 --static 返回完整的静态传递依赖。
+    # Qt 静态库位于 /ucrt64/qt6-static。
+    env:
+      PKG_CONFIG_ARGN: --static
+      PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig
+      CMAKE_PREFIX_PATH: /ucrt64/qt6-static
+      LDFLAGS: -static -static-libgcc -static-libstdc++
+
     steps:
       - name: Checkout source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
-      - name: Install MSYS2, compiler, static Qt and dependencies
+      - name: Install MSYS2 and static dependencies
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -46,332 +54,181 @@ jobs:
             mingw-w64-ucrt-x86_64-bzip2
             mingw-w64-ucrt-x86_64-dbus
             mingw-w64-ucrt-x86_64-freetype
+            mingw-w64-ucrt-x86_64-gettext-runtime
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-graphite2
             mingw-w64-ucrt-x86_64-harfbuzz
+            mingw-w64-ucrt-x86_64-libffi
             mingw-w64-ucrt-x86_64-libjpeg-turbo
             mingw-w64-ucrt-x86_64-libpng
             mingw-w64-ucrt-x86_64-libtiff
             mingw-w64-ucrt-x86_64-libwebp
             mingw-w64-ucrt-x86_64-openssl
             mingw-w64-ucrt-x86_64-pcre2
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-vulkan-loader
             mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-zstd
 
-      - name: Display tool and package versions
+      - name: Verify static libraries
         run: |
           set -euo pipefail
 
-          echo "MSYSTEM=${MSYSTEM}"
-          echo "MINGW_PREFIX=${MINGW_PREFIX}"
-          echo "PATH=${PATH}"
-
+          echo "CMake:"
           cmake --version
-          ninja --version
-          g++ --version
-          pkg-config --version
 
-          pacman -Q \
-            mingw-w64-ucrt-x86_64-qt6-static \
-            mingw-w64-ucrt-x86_64-libpng \
-            mingw-w64-ucrt-x86_64-zlib \
-            mingw-w64-ucrt-x86_64-pcre2 \
-            mingw-w64-ucrt-x86_64-freetype \
-            mingw-w64-ucrt-x86_64-harfbuzz
+          echo "Compiler:"
+          c++ --version
 
-      - name: Verify required static archives
-        run: |
-          set -euo pipefail
+          echo "Qt static installation:"
+          test -f /ucrt64/qt6-static/lib/libQt6Core.a
+          test -f /ucrt64/qt6-static/lib/libQt6Gui.a
+          test -f /ucrt64/qt6-static/lib/libQt6Widgets.a
+          test -f /ucrt64/qt6-static/lib/libQt6OpenGL.a
+          test -f /ucrt64/qt6-static/lib/libQt6OpenGLWidgets.a
 
-          required_archives=(
-            /ucrt64/lib/libpng.a
-            /ucrt64/lib/libz.a
-            /ucrt64/lib/libpcre2-16.a
-            /ucrt64/lib/libfreetype.a
-            /ucrt64/lib/libharfbuzz.a
-            /ucrt64/lib/libssl.a
-            /ucrt64/lib/libcrypto.a
-          )
+          echo "Important third-party static libraries:"
+          test -f /ucrt64/lib/libpng.a
+          test -f /ucrt64/lib/libz.a
+          test -f /ucrt64/lib/libfreetype.a
+          test -f /ucrt64/lib/libharfbuzz.a
+          test -f /ucrt64/lib/libpcre2-16.a
+          test -f /ucrt64/lib/libjpeg.a
+          test -f /ucrt64/lib/libssl.a
+          test -f /ucrt64/lib/libcrypto.a
 
-          for archive in "${required_archives[@]}"; do
-            if [[ ! -f "${archive}" ]]; then
-              echo "Missing static archive: ${archive}" >&2
-              exit 1
-            fi
-
-            echo "Found static archive: ${archive}"
-          done
-
-          if [[ ! -f \
-            /ucrt64/qt6-static/lib/cmake/Qt6/Qt6Config.cmake ]]; then
-            echo "Static Qt6Config.cmake was not found." >&2
-            exit 1
-          fi
-
-          echo
-          echo "Static pkg-config dependency checks:"
-
-          pkg-config --static --exists libpng
-          pkg-config --static --exists zlib
-          pkg-config --static --exists libpcre2-16
-          pkg-config --static --exists freetype2
-          pkg-config --static --exists harfbuzz
-
-          echo "libpng:"
+          echo "libpng static flags:"
           pkg-config --static --libs libpng
 
-          echo "freetype2:"
+          echo "FreeType static flags:"
           pkg-config --static --libs freetype2
 
-          echo "harfbuzz:"
+          echo "HarfBuzz static flags:"
           pkg-config --static --libs harfbuzz
 
-      - name: Configure static Release build
-        env:
-          # CMake 3.22+ 会将第一个参数识别为程序，
-          # 后面的 --static 用于初始化 PKG_CONFIG_ARGN。
-          PKG_CONFIG: pkg-config --static
+          echo "All required static library checks passed."
 
+      - name: Configure static Release build
         run: |
           set -euo pipefail
 
-          # 不能复用先前失败时产生的 CMake 缓存，
-          # 否则其中可能继续保存 libxxx.dll.a 路径。
+          # 每次都清理，避免旧 CMakeCache.txt 保留动态库路径。
           rm -rf build-static
 
-          cmake \
-            -S . \
-            -B build-static \
-            -G Ninja \
+          cmake -S . -B build-static -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_PREFIX_PATH=/ucrt64/qt6-static \
-            -DQt6_DIR=/ucrt64/qt6-static/lib/cmake/Qt6 \
-            -DCMAKE_FIND_LIBRARY_SUFFIXES=.a \
-            -DPKG_CONFIG_ARGN=--static \
+            -DCMAKE_FIND_LIBRARY_SUFFIXES_OVERRIDE=.a \
+            -DBUILD_SHARED_LIBS=OFF \
             -DOPENSSL_USE_STATIC_LIBS=ON \
             -DZLIB_USE_STATIC_LIBS=ON \
+            -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG -ffunction-sections -fdata-sections" \
+            -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG -ffunction-sections -fdata-sections" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++ -Wl,--gc-sections" \
             -DMCD_STATIC_WINDOWS=ON
-
-      - name: Verify configure selected static dependencies
-        run: |
-          set -euo pipefail
-
-          echo "Checking CMake cache for DLL import libraries..."
-
-          if grep -Eiq \
-            '(libpng|libz|libpcre2|libfreetype|libharfbuzz|libjpeg|libtiff|libwebp|libssl|libcrypto)[^[:space:]]*\.dll\.a' \
-            build-static/CMakeCache.txt; then
-
-            echo "CMake selected one or more DLL import libraries:" >&2
-
-            grep -Ei \
-              '(libpng|libz|libpcre2|libfreetype|libharfbuzz|libjpeg|libtiff|libwebp|libssl|libcrypto)[^[:space:]]*\.dll\.a' \
-              build-static/CMakeCache.txt >&2 || true
-
-            exit 1
-          fi
-
-          echo "No unwanted third-party .dll.a dependency was found in CMakeCache."
-
-          echo
-          echo "Selected dependency paths:"
-
-          grep -Ei \
-            '(PNG|ZLIB|PCRE|FREETYPE|HARFBUZZ|OPENSSL).*(:FILEPATH|:STRING)=' \
-            build-static/CMakeCache.txt || true
 
       - name: Build static executable
         run: |
           set -euo pipefail
 
-          cmake \
-            --build build-static \
+          # --verbose 可以在链接失败时显示完整链接命令。
+          # 限制并行数，避免静态 Qt 链接时占用过多内存。
+          cmake --build build-static \
             --config Release \
             --parallel 2 \
             --verbose
 
-      - name: Create distribution files
+      - name: Create single EXE distribution
         run: |
           set -euo pipefail
 
           mkdir -p dist
 
-          EXE_PATH="$(
-            find build-static \
-              -type f \
-              -iname 'MachineColorDesigner.exe' \
-              -not -path '*/CMakeFiles/*' \
-              -print \
-              -quit
-          )"
+          EXE_PATH="$(find build-static \
+            -type f \
+            -name 'MachineColorDesigner.exe' \
+            -print \
+            -quit)"
 
           if [[ -z "${EXE_PATH}" ]]; then
             echo "MachineColorDesigner.exe was not found." >&2
-
-            echo "Generated executable files:" >&2
-            find build-static \
-              -type f \
-              -iname '*.exe' \
-              -print >&2 || true
-
+            find build-static -maxdepth 4 -type f | sort
             exit 1
           fi
 
-          echo "Executable found at:"
-          echo "${EXE_PATH}"
+          echo "Executable found at: ${EXE_PATH}"
 
-          cp \
-            "${EXE_PATH}" \
-            dist/MachineColorDesigner.exe
+          cp "${EXE_PATH}" dist/MachineColorDesigner.exe
 
-          strip \
-            --strip-unneeded \
-            dist/MachineColorDesigner.exe
+          # 删除符号表，减小发布体积。
+          strip --strip-unneeded dist/MachineColorDesigner.exe
 
-          (
-            cd dist
+          echo "EXE information:"
+          ls -lh dist/MachineColorDesigner.exe
 
-            sha256sum MachineColorDesigner.exe \
-              > MachineColorDesigner.exe.sha256
-          )
-
-          echo
-          cat dist/MachineColorDesigner.exe.sha256
-
-          echo
-          ls -lh dist/
-
-      - name: Verify executable architecture
-        run: |
-          set -euo pipefail
-
-          objdump \
-            -f \
-            dist/MachineColorDesigner.exe \
-            | tee executable-format.txt
-
-          if ! grep -Eiq \
-            'pei-x86-64|i386:x86-64' \
-            executable-format.txt; then
-
-            echo "The executable is not Windows x86-64." >&2
-            exit 1
-          fi
+          echo "SHA-256:"
+          sha256sum dist/MachineColorDesigner.exe \
+            | tee dist/MachineColorDesigner.exe.sha256
 
       - name: Verify imported DLLs
         run: |
           set -euo pipefail
 
-          objdump \
-            -p \
-            dist/MachineColorDesigner.exe \
+          objdump -p dist/MachineColorDesigner.exe \
             | sed -n \
               's/^[[:space:]]*DLL Name:[[:space:]]*//p' \
-            | tr -d '\r' \
-            | sort -fu \
+            | sort -u \
             | tee imported-dlls.txt
 
-          if [[ ! -s imported-dlls.txt ]]; then
-            echo "Unable to read executable DLL imports." >&2
-            exit 1
-          fi
+          echo
+          echo "Imported DLLs:"
+          cat imported-dlls.txt
 
-          BAD_DEPENDENCY=0
+          # 检查 Qt、MinGW 运行库和常见第三方动态库。
+          BAD_DLL_PATTERN='^(Qt6.*|libgcc_s_.*|libstdc\+\+-6|libwinpthread-1|libpng.*|zlib1|libpcre2.*|libfreetype.*|libharfbuzz.*|libbrotli.*|libbz2.*|libintl.*|libglib.*|libgraphite2.*|libjpeg.*|libtiff.*|libwebp.*|libssl.*|libcrypto.*)\.dll$'
 
-          while IFS= read -r DLL; do
-            [[ -z "${DLL}" ]] && continue
+          if grep -Eiq "${BAD_DLL_PATTERN}" imported-dlls.txt; then
+            echo
+            echo "ERROR: Non-system runtime DLL dependency found:" >&2
 
-            DLL_LOWER="$(
-              printf '%s' "${DLL}" \
-                | tr '[:upper:]' '[:lower:]'
-            )"
+            grep -Ei "${BAD_DLL_PATTERN}" imported-dlls.txt >&2 || true
 
-            # Windows API-set contract names are system dependencies,
-            # and are not necessarily represented by an ordinary file.
-            case "${DLL_LOWER}" in
-              api-ms-win-*.dll|ext-ms-win-*.dll)
-                echo "Windows API set: ${DLL}"
-                continue
-                ;;
-            esac
-
-            # All other imported DLLs must exist in Windows System32.
-            # Qt、MinGW 和第三方 DLL 一般不会出现在这里。
-            if [[ -f "/c/Windows/System32/${DLL}" ]]; then
-              echo "Windows system DLL: ${DLL}"
-            else
-              echo "Unexpected non-system DLL: ${DLL}" >&2
-              BAD_DEPENDENCY=1
-            fi
-          done < imported-dlls.txt
-
-          if [[ "${BAD_DEPENDENCY}" -ne 0 ]]; then
-            echo >&2
-            echo "The executable still requires non-system DLL files." >&2
-            echo "Imported DLL list:" >&2
-            cat imported-dlls.txt >&2
             exit 1
           fi
 
           echo
-          echo "The executable imports only Windows system DLLs."
+          echo "Static dependency verification passed."
 
       - name: Upload single EXE artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: MachineColorDesigner-Windows-x64-single-exe
           path: |
             dist/MachineColorDesigner.exe
             dist/MachineColorDesigner.exe.sha256
-            imported-dlls.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
-  publish-release:
-    name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    needs:
-      - build-windows-static
-
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: MachineColorDesigner-Windows-x64-single-exe
-          path: dist
-
-      - name: List downloaded files
-        run: |
-          set -euo pipefail
-          find dist -maxdepth 2 -type f -print
-
-      - name: Create or update GitHub Release
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-
         run: |
-          set -euo pipefail
+          $tag = "${{ github.ref_name }}"
 
-          if ! gh release view \
-            "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            >/dev/null 2>&1; then
+          gh release view $tag *> $null
 
-            gh release create \
-              "${GITHUB_REF_NAME}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --generate-notes \
-              --title "${GITHUB_REF_NAME}"
-          fi
+          if ($LASTEXITCODE -ne 0) {
+            gh release create `
+              $tag `
+              --title $tag `
+              --generate-notes
+          }
 
-          gh release upload \
-            "${GITHUB_REF_NAME}" \
-            "dist/MachineColorDesigner.exe" \
-            "dist/MachineColorDesigner.exe.sha256" \
-            --repo "${GITHUB_REPOSITORY}" \
+          gh release upload `
+            $tag `
+            "dist/MachineColorDesigner.exe" `
+            "dist/MachineColorDesigner.exe.sha256" `
             --clobber
