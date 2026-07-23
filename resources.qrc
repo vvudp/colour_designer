@@ -1,0 +1,18 @@
+<RCC>
+    <qresource prefix="/assets">
+        <file alias="machine_original.png">assets/machine_original.png</file>
+        <file alias="upper_mask.png">assets/upper_mask.png</file>
+        <file alias="lower_mask.png">assets/lower_mask.png</file>
+        <file alias="mask_debug.png">assets/mask_debug.png</file>
+    </qresource>
+    <qresource prefix="/shaders">
+        <file alias="recolor.vert">shaders/recolor.vert</file>
+        <file alias="recolor.frag">shaders/recolor.frag</file>
+    </qresource>
+    <qresource prefix="/styles">
+        <file alias="app.qss">assets/app.qss</file>
+    </qresource>
+    <qresource prefix="/presets">
+        <file alias="default_palettes.json">presets/default_palettes.json</file>
+    </qresource>
+</RCC>

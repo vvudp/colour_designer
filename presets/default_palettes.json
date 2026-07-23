@@ -1,0 +1,28 @@
+{
+  "format": "MachineColorDesignerPresetCollection",
+  "version": 1,
+  "palettes": [
+    {
+      "name": "银蓝哑光",
+      "state": {
+        "upperColor": "#D0D4D7",
+        "lowerColor": "#68A6C4",
+        "matte": 0.88,
+        "highlight": 0.22,
+        "shadow": 1.0,
+        "brightness": 1.0
+      }
+    },
+    {
+      "name": "高级灰",
+      "state": {
+        "upperColor": "#AEB4B8",
+        "lowerColor": "#515A60",
+        "matte": 0.92,
+        "highlight": 0.18,
+        "shadow": 1.05,
+        "brightness": 0.98
+      }
+    }
+  ]
+}
