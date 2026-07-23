@@ -20,7 +20,7 @@ jobs:
   build-windows-static:
     name: Windows x64 static Qt
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     defaults:
       run:
@@ -30,7 +30,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v7
 
-      - name: Install MSYS2, MinGW-w64 and static Qt
+      - name: Install MSYS2, compiler, static Qt and dependencies
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -40,37 +40,153 @@ jobs:
             mingw-w64-ucrt-x86_64-toolchain
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-qt6-static
+            mingw-w64-ucrt-x86_64-brotli
+            mingw-w64-ucrt-x86_64-bzip2
+            mingw-w64-ucrt-x86_64-dbus
+            mingw-w64-ucrt-x86_64-freetype
+            mingw-w64-ucrt-x86_64-harfbuzz
+            mingw-w64-ucrt-x86_64-libjpeg-turbo
+            mingw-w64-ucrt-x86_64-libpng
+            mingw-w64-ucrt-x86_64-libtiff
+            mingw-w64-ucrt-x86_64-libwebp
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-pcre2
+            mingw-w64-ucrt-x86_64-zlib
 
-      - name: Display tool versions
+      - name: Display tool and package versions
         run: |
           set -euo pipefail
+
+          echo "MSYSTEM=${MSYSTEM}"
+          echo "MINGW_PREFIX=${MINGW_PREFIX}"
+          echo "PATH=${PATH}"
 
           cmake --version
           ninja --version
           g++ --version
+          pkg-config --version
 
           pacman -Q \
             mingw-w64-ucrt-x86_64-qt6-static \
-            mingw-w64-ucrt-x86_64-gcc \
-            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-libpng \
+            mingw-w64-ucrt-x86_64-zlib \
+            mingw-w64-ucrt-x86_64-pcre2 \
+            mingw-w64-ucrt-x86_64-freetype \
+            mingw-w64-ucrt-x86_64-harfbuzz
+
+      - name: Verify required static archives
+        run: |
+          set -euo pipefail
+
+          required_archives=(
+            /ucrt64/lib/libpng.a
+            /ucrt64/lib/libz.a
+            /ucrt64/lib/libpcre2-16.a
+            /ucrt64/lib/libfreetype.a
+            /ucrt64/lib/libharfbuzz.a
+            /ucrt64/lib/libssl.a
+            /ucrt64/lib/libcrypto.a
+          )
+
+          for archive in "${required_archives[@]}"; do
+            if [[ ! -f "${archive}" ]]; then
+              echo "Missing static archive: ${archive}" >&2
+              exit 1
+            fi
+
+            echo "Found static archive: ${archive}"
+          done
+
+          if [[ ! -f \
+            /ucrt64/qt6-static/lib/cmake/Qt6/Qt6Config.cmake ]]; then
+            echo "Static Qt6Config.cmake was not found." >&2
+            exit 1
+          fi
+
+          echo
+          echo "Static pkg-config dependency checks:"
+
+          pkg-config --static --exists libpng
+          pkg-config --static --exists zlib
+          pkg-config --static --exists libpcre2-16
+          pkg-config --static --exists freetype2
+          pkg-config --static --exists harfbuzz
+
+          echo "libpng:"
+          pkg-config --static --libs libpng
+
+          echo "freetype2:"
+          pkg-config --static --libs freetype2
+
+          echo "harfbuzz:"
+          pkg-config --static --libs harfbuzz
 
       - name: Configure static Release build
+        env:
+          # CMake 3.22+ 会将第一个参数识别为程序，
+          # 后面的 --static 用于初始化 PKG_CONFIG_ARGN。
+          PKG_CONFIG: pkg-config --static
+
         run: |
           set -euo pipefail
 
-          cmake -S . -B build-static -G Ninja \
+          # 不能复用先前失败时产生的 CMake 缓存，
+          # 否则其中可能继续保存 libxxx.dll.a 路径。
+          rm -rf build-static
+
+          cmake \
+            -S . \
+            -B build-static \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_PREFIX_PATH=/ucrt64/qt6-static \
-            -DCMAKE_FIND_LIBRARY_SUFFIXES_OVERRIDE=.a \
-            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DQt6_DIR=/ucrt64/qt6-static/lib/cmake/Qt6 \
+            -DCMAKE_FIND_LIBRARY_SUFFIXES=.a \
             -DPKG_CONFIG_ARGN=--static \
+            -DOPENSSL_USE_STATIC_LIBS=ON \
+            -DZLIB_USE_STATIC_LIBS=ON \
             -DMCD_STATIC_WINDOWS=ON
 
-      - name: Build
+      - name: Verify configure selected static dependencies
         run: |
           set -euo pipefail
-          cmake --build build-static --parallel 2
+
+          echo "Checking CMake cache for DLL import libraries..."
+
+          if grep -Eiq \
+            '(libpng|libz|libpcre2|libfreetype|libharfbuzz|libjpeg|libtiff|libwebp|libssl|libcrypto)[^[:space:]]*\.dll\.a' \
+            build-static/CMakeCache.txt; then
+
+            echo "CMake selected one or more DLL import libraries:" >&2
+
+            grep -Ei \
+              '(libpng|libz|libpcre2|libfreetype|libharfbuzz|libjpeg|libtiff|libwebp|libssl|libcrypto)[^[:space:]]*\.dll\.a' \
+              build-static/CMakeCache.txt >&2 || true
+
+            exit 1
+          fi
+
+          echo "No unwanted third-party .dll.a dependency was found in CMakeCache."
+
+          echo
+          echo "Selected dependency paths:"
+
+          grep -Ei \
+            '(PNG|ZLIB|PCRE|FREETYPE|HARFBUZZ|OPENSSL).*(:FILEPATH|:STRING)=' \
+            build-static/CMakeCache.txt || true
+
+      - name: Build static executable
+        run: |
+          set -euo pipefail
+
+          cmake \
+            --build build-static \
+            --config Release \
+            --parallel 2 \
+            --verbose
 
       - name: Create distribution files
         run: |
@@ -81,7 +197,7 @@ jobs:
           EXE_PATH="$(
             find build-static \
               -type f \
-              -name 'MachineColorDesigner.exe' \
+              -iname 'MachineColorDesigner.exe' \
               -not -path '*/CMakeFiles/*' \
               -print \
               -quit
@@ -89,96 +205,114 @@ jobs:
 
           if [[ -z "${EXE_PATH}" ]]; then
             echo "MachineColorDesigner.exe was not found." >&2
-            echo "Files generated under build-static:" >&2
-            find build-static -maxdepth 4 -type f | sort >&2
+
+            echo "Generated executable files:" >&2
+            find build-static \
+              -type f \
+              -iname '*.exe' \
+              -print >&2 || true
+
             exit 1
           fi
 
-          echo "Executable found at: ${EXE_PATH}"
+          echo "Executable found at:"
+          echo "${EXE_PATH}"
 
-          cp "${EXE_PATH}" dist/MachineColorDesigner.exe
+          cp \
+            "${EXE_PATH}" \
+            dist/MachineColorDesigner.exe
 
-          strip --strip-unneeded dist/MachineColorDesigner.exe
+          strip \
+            --strip-unneeded \
+            dist/MachineColorDesigner.exe
 
           (
             cd dist
+
             sha256sum MachineColorDesigner.exe \
               > MachineColorDesigner.exe.sha256
           )
 
+          echo
           cat dist/MachineColorDesigner.exe.sha256
+
+          echo
           ls -lh dist/
 
       - name: Verify executable architecture
         run: |
           set -euo pipefail
 
-          objdump -f dist/MachineColorDesigner.exe
+          objdump \
+            -f \
+            dist/MachineColorDesigner.exe \
+            | tee executable-format.txt
 
-          if ! objdump -f dist/MachineColorDesigner.exe \
-              | grep -Eiq 'pei-x86-64|i386:x86-64'; then
-            echo "The executable is not a Windows x86-64 binary." >&2
+          if ! grep -Eiq \
+            'pei-x86-64|i386:x86-64' \
+            executable-format.txt; then
+
+            echo "The executable is not Windows x86-64." >&2
             exit 1
           fi
 
-      - name: Verify DLL dependencies
+      - name: Verify imported DLLs
         run: |
           set -euo pipefail
 
-          mapfile -t IMPORTED_DLLS < <(
-            objdump -p dist/MachineColorDesigner.exe \
-              | sed -n \
-                's/^[[:space:]]*DLL Name:[[:space:]]*//p' \
-              | tr -d '\r'
-          )
-
-          printf '%s\n' "${IMPORTED_DLLS[@]}" \
+          objdump \
+            -p \
+            dist/MachineColorDesigner.exe \
+            | sed -n \
+              's/^[[:space:]]*DLL Name:[[:space:]]*//p' \
+            | tr -d '\r' \
+            | sort -fu \
             | tee imported-dlls.txt
+
+          if [[ ! -s imported-dlls.txt ]]; then
+            echo "Unable to read executable DLL imports." >&2
+            exit 1
+          fi
 
           BAD_DEPENDENCY=0
 
-          for DLL in "${IMPORTED_DLLS[@]}"; do
+          while IFS= read -r DLL; do
+            [[ -z "${DLL}" ]] && continue
+
             DLL_LOWER="$(
               printf '%s' "${DLL}" \
                 | tr '[:upper:]' '[:lower:]'
             )"
 
-            # These indicate that the executable is not truly self-contained.
-            case "${DLL_LOWER}" in
-              qt*.dll|\
-              lib*.dll|\
-              zlib*.dll|\
-              vulkan-1.dll|\
-              vcruntime*.dll|\
-              msvcp*.dll|\
-              ucrtbase.dll|\
-              msvcrt.dll)
-                echo "Non-static runtime dependency: ${DLL}" >&2
-                BAD_DEPENDENCY=1
-                continue
-                ;;
-            esac
-
-            # Windows API-set DLLs are virtual/system contracts.
+            # Windows API-set contract names are system dependencies,
+            # and are not necessarily represented by an ordinary file.
             case "${DLL_LOWER}" in
               api-ms-win-*.dll|ext-ms-win-*.dll)
+                echo "Windows API set: ${DLL}"
                 continue
                 ;;
             esac
 
-            # All remaining direct dependencies must be Windows system DLLs.
-            if [[ ! -f "/c/Windows/System32/${DLL}" ]]; then
-              echo "Non-system DLL dependency: ${DLL}" >&2
+            # All other imported DLLs must exist in Windows System32.
+            # Qt、MinGW 和第三方 DLL 一般不会出现在这里。
+            if [[ -f "/c/Windows/System32/${DLL}" ]]; then
+              echo "Windows system DLL: ${DLL}"
+            else
+              echo "Unexpected non-system DLL: ${DLL}" >&2
               BAD_DEPENDENCY=1
             fi
-          done
+          done < imported-dlls.txt
 
           if [[ "${BAD_DEPENDENCY}" -ne 0 ]]; then
-            echo "The executable is not fully self-contained." >&2
+            echo >&2
+            echo "The executable still requires non-system DLL files." >&2
+            echo "Imported DLL list:" >&2
+            cat imported-dlls.txt >&2
             exit 1
           fi
 
-          echo "Direct imports contain only Windows system DLLs."
+          echo
+          echo "The executable imports only Windows system DLLs."
 
       - name: Upload single EXE artifact
         uses: actions/upload-artifact@v7
@@ -187,6 +321,7 @@ jobs:
           path: |
             dist/MachineColorDesigner.exe
             dist/MachineColorDesigner.exe.sha256
+            imported-dlls.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
@@ -194,6 +329,7 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
+
     needs:
       - build-windows-static
 
@@ -203,25 +339,39 @@ jobs:
       contents: write
 
     steps:
-      - name: Download build artifact
+      - name: Download Windows artifact
         uses: actions/download-artifact@v8
         with:
           name: MachineColorDesigner-Windows-x64-single-exe
           path: dist
 
+      - name: List downloaded files
+        run: |
+          set -euo pipefail
+          find dist -maxdepth 2 -type f -print
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+
         run: |
           set -euo pipefail
 
-          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release create "${GITHUB_REF_NAME}" \
+          if ! gh release view \
+            "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            >/dev/null 2>&1; then
+
+            gh release create \
+              "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
               --generate-notes \
               --title "${GITHUB_REF_NAME}"
           fi
 
-          gh release upload "${GITHUB_REF_NAME}" \
-            dist/MachineColorDesigner.exe \
-            dist/MachineColorDesigner.exe.sha256 \
+          gh release upload \
+            "${GITHUB_REF_NAME}" \
+            "dist/MachineColorDesigner.exe" \
+            "dist/MachineColorDesigner.exe.sha256" \
+            --repo "${GITHUB_REPOSITORY}" \
             --clobber
