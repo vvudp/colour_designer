@@ -18,7 +18,7 @@ int main(int argc, char *argv[])
 
     QApplication application(argc, argv);
     application.setApplicationName(QStringLiteral("Machine Color Designer"));
-    application.setOrganizationName(QStringLiteral("Org"));
+    application.setOrganizationName(QStringLiteral("Hengyao Yirui"));
     application.setApplicationVersion(QStringLiteral("1.0.0"));
     application.setFont(QFont(QStringLiteral("Noto Sans CJK SC"), 10));
 

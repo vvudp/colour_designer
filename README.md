@@ -13,7 +13,38 @@
 - 滚轮缩放、鼠标拖动、双击恢复适配。
 - 按住按钮查看原始图片。
 - 撤销、重做、保存/载入 JSON 配色方案。
-- 按原始 717 × 2048 分辨率导出 PNG，而不是截取窗口。
+- 导出带参数记录的 PNG：左侧保留原始 717 × 2048 渲染结果，右侧自动附加颜色与材质信息面板。
+- PNG 内部同时写入完整 JSON 元数据，便于归档、核对和后续程序自动读取。
+- 默认文件名自动包含上下部 HEX 色值，例如 `machine_U-D0D4D7_L-68A6C4.png`。
+
+## 带参数 PNG 导出
+
+点击右侧的“导出带参数 PNG”后，程序会生成一张组合图片：
+
+- 左侧：完整机器配色效果，仍以原始 717 × 2048 分辨率渲染。
+- 右侧：上部和下部颜色块，以及 HEX、RGB、HSV、HSL 数值。
+- 右侧：哑光程度、高光保留、阴影深度、整体明度。
+- 底部：导出时间。
+
+除了肉眼可见的信息面板，PNG 的文本块中还会保存键名：
+
+```text
+MachineColorDesigner.State
+```
+
+该字段的内容是紧凑 JSON，包括颜色、材质参数、应用版本、导出时间和原始渲染尺寸。Linux 下可以使用 `exiftool` 检查：
+
+```bash
+exiftool -MachineColorDesigner.State machine_U-D0D4D7_L-68A6C4.png
+```
+
+或者查看 PNG 的全部文本信息：
+
+```bash
+identify -verbose machine_U-D0D4D7_L-68A6C4.png
+```
+
+信息面板不会覆盖机器图像，而是扩展画布宽度，因此机器造型、比例和细节不会被压缩。
 
 ## Fedora 编译
 
@@ -90,9 +121,21 @@ python3 tools/generate_masks.py \
 src/PreviewGLWidget.*   OpenGL 预览、缩放和拖动
 src/ColorPickerWidget.* 自定义 HSV 调色盘
 src/ControlPanel.*      区域、材质、历史和操作面板
-src/ImageRecolorer.*    原始分辨率 CPU 导出
+src/ImageRecolorer.*    原始分辨率 CPU 渲染
+src/ExportComposer.*    导出信息面板、文件名和 PNG JSON 元数据
 shaders/recolor.frag    GPU 实时着色算法
 assets/upper_mask.png   上部蒙版
 assets/lower_mask.png   合并后的下部蒙版
 tools/generate_masks.py 蒙版生成与联合羽化
 ```
+
+## Windows 本地构建与便携部署
+
+参见 [WINDOWS_LOCAL_BUILD.md](WINDOWS_LOCAL_BUILD.md)。可直接运行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\build-windows-mingw.ps1 -Clean
+```
+
+输出为 `dist\MachineColorDesigner-Windows-x64` 文件夹和同名 ZIP。

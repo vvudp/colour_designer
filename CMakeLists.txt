@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(MachineColorDesigner
-    VERSION 1.1.0
+    VERSION 1.3.0
     LANGUAGES CXX
 )
 
@@ -11,6 +11,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
+
+option(MCD_STATIC_WINDOWS "Create a self-contained MinGW Windows executable" OFF)
 
 find_package(Qt6 REQUIRED COMPONENTS
     Core
@@ -36,6 +38,8 @@ qt_add_executable(MachineColorDesigner
     src/PaletteSerializer.h
     src/ImageRecolorer.cpp
     src/ImageRecolorer.h
+    src/ExportComposer.cpp
+    src/ExportComposer.h
     resources.qrc
 )
 
@@ -51,6 +55,22 @@ if(MSVC)
     target_compile_options(MachineColorDesigner PRIVATE /W4 /permissive-)
 else()
     target_compile_options(MachineColorDesigner PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# The MSYS2 qt6-static package already provides static Qt libraries and static
+# Qt plugins. These options also link the MinGW C/C++ runtime into the EXE so
+# libgcc_s_seh-1.dll, libstdc++-6.dll and libwinpthread-1.dll are not needed.
+if(WIN32 AND MINGW AND MCD_STATIC_WINDOWS)
+    target_compile_options(MachineColorDesigner PRIVATE
+        -ffunction-sections
+        -fdata-sections
+    )
+    target_link_options(MachineColorDesigner PRIVATE
+        -static
+        -static-libgcc
+        -static-libstdc++
+        -Wl,--gc-sections
+    )
 endif()
 
 set_target_properties(MachineColorDesigner PROPERTIES

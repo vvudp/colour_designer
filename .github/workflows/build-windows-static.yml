@@ -1,0 +1,103 @@
+name: Build Windows single EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-static:
+    name: Windows x64 static Qt
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+
+      - name: Install MSYS2, MinGW-w64 and static Qt
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          cache: true
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-static
+
+      - name: Configure static Release build
+        env:
+          PKG_CONFIG_ARGN: --static
+          LDFLAGS: -static -static-libgcc -static-libstdc++
+        run: |
+          cmake -S . -B build-static -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/ucrt64/qt6-static \
+            -DCMAKE_FIND_LIBRARY_SUFFIXES_OVERRIDE=.a \
+            -DMCD_STATIC_WINDOWS=ON
+
+      - name: Build
+        run: cmake --build build-static --parallel 2
+
+      - name: Create distribution file
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp build-static/MachineColorDesigner.exe dist/MachineColorDesigner.exe
+          strip --strip-unneeded dist/MachineColorDesigner.exe
+          sha256sum dist/MachineColorDesigner.exe
+          ls -lh dist/MachineColorDesigner.exe
+
+      - name: Verify no Qt or MinGW runtime DLL is required
+        run: |
+          set -euo pipefail
+          objdump -p dist/MachineColorDesigner.exe \
+            | sed -n 's/^[[:space:]]*DLL Name:[[:space:]]*//p' \
+            | tee imported-dlls.txt
+
+          if grep -Eiq \
+            '^(Qt6.*|libgcc_s_.*|libstdc\+\+-6|libwinpthread-1|libbz2-1|libbrotli.*|libfreetype-6|libharfbuzz-0|libiconv-2|libintl-8|libjpeg-8|libpng16-16|libpcre2-16-0|libpcre2-8-0|libssl-.*|libcrypto-.*|zlib1)\.dll$' \
+            imported-dlls.txt; then
+            echo "Unexpected non-system DLL dependency found:" >&2
+            cat imported-dlls.txt >&2
+            exit 1
+          fi
+
+          echo "Only Windows/system DLL imports remain:"
+          cat imported-dlls.txt
+
+      - name: Upload single EXE artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: MachineColorDesigner-Windows-x64-single-exe
+          path: dist/MachineColorDesigner.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Publish EXE to GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "${{ github.ref_name }}" --generate-notes --title "${{ github.ref_name }}"
+          }
+          gh release upload "${{ github.ref_name }}" "dist/MachineColorDesigner.exe" --clobber

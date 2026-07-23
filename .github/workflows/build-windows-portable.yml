@@ -1,0 +1,232 @@
+name: Build Windows portable package
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: MachineColorDesigner
+  QT_VERSION: "6.11.1"
+  QT_ARCH: win64_mingw
+  BUILD_DIR: build-windows-release
+  DIST_DIR: dist/MachineColorDesigner-Windows-x64
+  ZIP_PATH: dist/MachineColorDesigner-Windows-x64.zip
+
+jobs:
+  build-windows-portable:
+    name: Windows x64 / Qt MinGW portable folder
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Install Qt and matching MinGW toolchain
+        uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: ${{ env.QT_ARCH }}
+          tools: tools_mingw1310,qt.tools.win64_mingw1310
+          add-tools-to-path: true
+          set-env: true
+          cache: true
+          cache-key-prefix: qt-${{ env.QT_VERSION }}-mingw1310
+
+      - name: Verify build environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "QT_ROOT_DIR=$env:QT_ROOT_DIR"
+          if (-not $env:QT_ROOT_DIR) {
+            throw "install-qt-action did not set QT_ROOT_DIR."
+          }
+
+          $requiredCommands = @(
+            "cmake.exe",
+            "ninja.exe",
+            "g++.exe",
+            "windeployqt.exe"
+          )
+
+          foreach ($command in $requiredCommands) {
+            $resolved = Get-Command $command -ErrorAction Stop
+            Write-Host "$command -> $($resolved.Source)"
+          }
+
+          cmake --version
+          ninja --version
+          g++ --version
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --version
+
+      - name: Configure Release build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          cmake `
+            -S . `
+            -B "${{ env.BUILD_DIR }}" `
+            -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DCMAKE_CXX_COMPILER=g++.exe `
+            -DMCD_STATIC_WINDOWS=OFF
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --build "${{ env.BUILD_DIR }}" --parallel 2
+
+      - name: Create portable folder with windeployqt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $buildExe = Join-Path "${{ env.BUILD_DIR }}" "${{ env.APP_NAME }}.exe"
+          $distDir = "${{ env.DIST_DIR }}"
+          $distExe = Join-Path $distDir "${{ env.APP_NAME }}.exe"
+
+          if (-not (Test-Path $buildExe)) {
+            throw "Build output was not found: $buildExe"
+          }
+
+          Remove-Item $distDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $distDir -Force | Out-Null
+          Copy-Item $buildExe $distExe -Force
+
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" `
+            --release `
+            --compiler-runtime `
+            --no-translations `
+            --force `
+            --verbose 1 `
+            $distExe
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "windeployqt failed with exit code $LASTEXITCODE."
+          }
+
+          $runGuide = @"
+          Machine Color Designer - Windows x64 portable package
+
+          How to run:
+          1. Extract the whole ZIP file.
+          2. Keep all DLL files and subdirectories in place.
+          3. Double-click MachineColorDesigner.exe.
+          4. Qt, MinGW, CMake and Visual Studio are not required on the target PC.
+
+          Recommended system:
+          - 64-bit Windows 10 or Windows 11
+          - A graphics driver with OpenGL 3.3 support
+          "@
+
+          Set-Content `
+            -Path (Join-Path $distDir "README_RUN.txt") `
+            -Value $runGuide `
+            -Encoding UTF8
+
+      - name: Verify portable package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $distDir = "${{ env.DIST_DIR }}"
+          $requiredFiles = @(
+            (Join-Path $distDir "${{ env.APP_NAME }}.exe"),
+            (Join-Path $distDir "Qt6Core.dll"),
+            (Join-Path $distDir "Qt6Gui.dll"),
+            (Join-Path $distDir "Qt6Widgets.dll"),
+            (Join-Path $distDir "Qt6OpenGL.dll"),
+            (Join-Path $distDir "Qt6OpenGLWidgets.dll"),
+            (Join-Path $distDir "platforms\qwindows.dll")
+          )
+
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path $file)) {
+              throw "Portable package is incomplete. Missing: $file"
+            }
+          }
+
+          $runtimeCandidates = @(
+            "libgcc_s_seh-1.dll",
+            "libstdc++-6.dll",
+            "libwinpthread-1.dll"
+          )
+
+          foreach ($runtime in $runtimeCandidates) {
+            $path = Join-Path $distDir $runtime
+            if (Test-Path $path) {
+              Write-Host "MinGW runtime included: $runtime"
+            }
+          }
+
+          $files = Get-ChildItem $distDir -Recurse -File
+          $totalBytes = ($files | Measure-Object Length -Sum).Sum
+          Write-Host "Portable file count: $($files.Count)"
+          Write-Host ("Portable folder size: {0:N2} MB" -f ($totalBytes / 1MB))
+
+      - name: Create ZIP package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $zipPath = "${{ env.ZIP_PATH }}"
+          Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+
+          Compress-Archive `
+            -Path "${{ env.DIST_DIR }}" `
+            -DestinationPath $zipPath `
+            -CompressionLevel Optimal `
+            -Force
+
+          if (-not (Test-Path $zipPath)) {
+            throw "ZIP package was not created: $zipPath"
+          }
+
+          $hash = Get-FileHash $zipPath -Algorithm SHA256
+          Write-Host "SHA256: $($hash.Hash)"
+          Write-Host ("ZIP size: {0:N2} MB" -f ((Get-Item $zipPath).Length / 1MB))
+
+      - name: Upload portable ZIP artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.ZIP_PATH }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish ZIP to GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.ref_name }}"
+          $zipPath = "${{ env.ZIP_PATH }}"
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag `
+              --title $tag `
+              --generate-notes
+          }
+
+          gh release upload $tag $zipPath --clobber

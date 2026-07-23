@@ -1,10 +1,7 @@
-build/
-build-*/
-dist/
-.vscode/
-CMakeUserPresets.json
+/build/
+/build-*/
+/dist/
 *.user
-*.pdb
-*.ilk
-*.obj
-*.exe
+*.autosave
+.DS_Store
+Thumbs.db

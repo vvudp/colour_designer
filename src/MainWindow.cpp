@@ -1,11 +1,14 @@
 #include "MainWindow.h"
 
 #include "ControlPanel.h"
+#include "ExportComposer.h"
 #include "PaletteSerializer.h"
 #include "PreviewGLWidget.h"
 
 #include <QAction>
+#include <QDateTime>
 #include <QFileDialog>
+#include <QImageWriter>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMenuBar>
@@ -42,7 +45,7 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::loadPalette);
 
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("文件"));
-    auto *exportAction = fileMenu->addAction(QStringLiteral("导出 PNG…"));
+    auto *exportAction = fileMenu->addAction(QStringLiteral("导出带参数 PNG…"));
     auto *saveAction = fileMenu->addAction(QStringLiteral("保存配色方案…"));
     auto *loadAction = fileMenu->addAction(QStringLiteral("载入配色方案…"));
     fileMenu->addSeparator();
@@ -70,26 +73,58 @@ void MainWindow::exportImage()
         return;
     }
 
-    const QString fileName = QFileDialog::getSaveFileName(
+    const RecolorState state = controlPanel_->state();
+    QString fileName = QFileDialog::getSaveFileName(
         this,
-        QStringLiteral("导出配色效果图"),
-        QStringLiteral("machine_color_design.png"),
+        QStringLiteral("导出带参数的配色效果图"),
+        ExportComposer::defaultFileName(state),
         QStringLiteral("PNG 图片 (*.png)"));
     if (fileName.isEmpty()) {
         return;
     }
+    if (!fileName.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)) {
+        fileName += QStringLiteral(".png");
+    }
 
-    statusBar()->showMessage(QStringLiteral("正在渲染原始分辨率图片…"));
-    QImage image = preview_->recolorer().render(controlPanel_->state());
-    if (image.isNull() || !image.save(fileName, "PNG")) {
+    statusBar()->showMessage(QStringLiteral("正在渲染并写入颜色参数…"));
+
+    const QDateTime exportedAt = QDateTime::currentDateTime();
+    const QImage rendered = preview_->recolorer().render(state);
+    const QImage annotated = ExportComposer::composeAnnotatedImage(
+        rendered,
+        state,
+        exportedAt);
+    if (rendered.isNull() || annotated.isNull()) {
         QMessageBox::critical(this,
                               QStringLiteral("导出失败"),
-                              QStringLiteral("无法写入 PNG 文件。请检查路径和权限。"));
+                              QStringLiteral("无法生成带参数的配色效果图。"));
         statusBar()->showMessage(QStringLiteral("导出失败"), 3000);
         return;
     }
 
-    statusBar()->showMessage(QStringLiteral("已导出：%1").arg(fileName), 5000);
+    const QString metadata = ExportComposer::metadataJson(
+        state,
+        rendered.size(),
+        exportedAt);
+
+    QImageWriter writer(fileName, "png");
+    writer.setCompression(6);
+    writer.setText(QStringLiteral("Title"), QStringLiteral("Machine Color Design Record"));
+    writer.setText(QStringLiteral("Software"), QStringLiteral("MachineColorDesigner 1.2.0"));
+    writer.setText(QStringLiteral("Description"),
+                   QStringLiteral("包含上部、下部颜色以及哑光、光影参数的机器配色方案记录。"));
+    writer.setText(QStringLiteral("MachineColorDesigner.State"), metadata);
+
+    if (!writer.write(annotated)) {
+        QMessageBox::critical(
+            this,
+            QStringLiteral("导出失败"),
+            QStringLiteral("无法写入 PNG 文件：%1").arg(writer.errorString()));
+        statusBar()->showMessage(QStringLiteral("导出失败"), 3000);
+        return;
+    }
+
+    statusBar()->showMessage(QStringLiteral("已导出带参数图片：%1").arg(fileName), 5000);
 }
 
 void MainWindow::savePalette()

@@ -144,7 +144,7 @@ ControlPanel::ControlPanel(QWidget *parent)
     auto *compareButton = new QPushButton(QStringLiteral("按住查看原图"), content);
     auto *saveButton = new QPushButton(QStringLiteral("保存方案"), content);
     auto *loadButton = new QPushButton(QStringLiteral("载入方案"), content);
-    auto *exportButton = new QPushButton(QStringLiteral("导出 PNG"), content);
+    auto *exportButton = new QPushButton(QStringLiteral("导出带参数 PNG"), content);
     exportButton->setObjectName(QStringLiteral("primaryButton"));
 
     auto *actionLayout = new QGridLayout;
