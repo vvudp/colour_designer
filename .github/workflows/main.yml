@@ -2,23 +2,25 @@ name: Build Windows single EXE
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
     tags:
       - "v*"
+
   pull_request:
     branches:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-windows-static:
     name: Windows x64 static Qt
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     defaults:
       run:
@@ -40,64 +42,186 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-qt6-static
 
-      - name: Configure static Release build
-        env:
-          PKG_CONFIG_ARGN: --static
-          LDFLAGS: -static -static-libgcc -static-libstdc++
+      - name: Display tool versions
         run: |
+          set -euo pipefail
+
+          cmake --version
+          ninja --version
+          g++ --version
+
+          pacman -Q \
+            mingw-w64-ucrt-x86_64-qt6-static \
+            mingw-w64-ucrt-x86_64-gcc \
+            mingw-w64-ucrt-x86_64-cmake
+
+      - name: Configure static Release build
+        run: |
+          set -euo pipefail
+
           cmake -S . -B build-static -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH=/ucrt64/qt6-static \
             -DCMAKE_FIND_LIBRARY_SUFFIXES_OVERRIDE=.a \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DPKG_CONFIG_ARGN=--static \
             -DMCD_STATIC_WINDOWS=ON
 
       - name: Build
-        run: cmake --build build-static --parallel 2
-
-      - name: Create distribution file
         run: |
           set -euo pipefail
+          cmake --build build-static --parallel 2
+
+      - name: Create distribution files
+        run: |
+          set -euo pipefail
+
           mkdir -p dist
-          cp build-static/MachineColorDesigner.exe dist/MachineColorDesigner.exe
-          strip --strip-unneeded dist/MachineColorDesigner.exe
-          sha256sum dist/MachineColorDesigner.exe
-          ls -lh dist/MachineColorDesigner.exe
 
-      - name: Verify no Qt or MinGW runtime DLL is required
-        run: |
-          set -euo pipefail
-          objdump -p dist/MachineColorDesigner.exe \
-            | sed -n 's/^[[:space:]]*DLL Name:[[:space:]]*//p' \
-            | tee imported-dlls.txt
+          EXE_PATH="$(
+            find build-static \
+              -type f \
+              -name 'MachineColorDesigner.exe' \
+              -not -path '*/CMakeFiles/*' \
+              -print \
+              -quit
+          )"
 
-          if grep -Eiq \
-            '^(Qt6.*|libgcc_s_.*|libstdc\+\+-6|libwinpthread-1|libbz2-1|libbrotli.*|libfreetype-6|libharfbuzz-0|libiconv-2|libintl-8|libjpeg-8|libpng16-16|libpcre2-16-0|libpcre2-8-0|libssl-.*|libcrypto-.*|zlib1)\.dll$' \
-            imported-dlls.txt; then
-            echo "Unexpected non-system DLL dependency found:" >&2
-            cat imported-dlls.txt >&2
+          if [[ -z "${EXE_PATH}" ]]; then
+            echo "MachineColorDesigner.exe was not found." >&2
+            echo "Files generated under build-static:" >&2
+            find build-static -maxdepth 4 -type f | sort >&2
             exit 1
           fi
 
-          echo "Only Windows/system DLL imports remain:"
-          cat imported-dlls.txt
+          echo "Executable found at: ${EXE_PATH}"
+
+          cp "${EXE_PATH}" dist/MachineColorDesigner.exe
+
+          strip --strip-unneeded dist/MachineColorDesigner.exe
+
+          (
+            cd dist
+            sha256sum MachineColorDesigner.exe \
+              > MachineColorDesigner.exe.sha256
+          )
+
+          cat dist/MachineColorDesigner.exe.sha256
+          ls -lh dist/
+
+      - name: Verify executable architecture
+        run: |
+          set -euo pipefail
+
+          objdump -f dist/MachineColorDesigner.exe
+
+          if ! objdump -f dist/MachineColorDesigner.exe \
+              | grep -Eiq 'pei-x86-64|i386:x86-64'; then
+            echo "The executable is not a Windows x86-64 binary." >&2
+            exit 1
+          fi
+
+      - name: Verify DLL dependencies
+        run: |
+          set -euo pipefail
+
+          mapfile -t IMPORTED_DLLS < <(
+            objdump -p dist/MachineColorDesigner.exe \
+              | sed -n \
+                's/^[[:space:]]*DLL Name:[[:space:]]*//p' \
+              | tr -d '\r'
+          )
+
+          printf '%s\n' "${IMPORTED_DLLS[@]}" \
+            | tee imported-dlls.txt
+
+          BAD_DEPENDENCY=0
+
+          for DLL in "${IMPORTED_DLLS[@]}"; do
+            DLL_LOWER="$(
+              printf '%s' "${DLL}" \
+                | tr '[:upper:]' '[:lower:]'
+            )"
+
+            # These indicate that the executable is not truly self-contained.
+            case "${DLL_LOWER}" in
+              qt*.dll|\
+              lib*.dll|\
+              zlib*.dll|\
+              vulkan-1.dll|\
+              vcruntime*.dll|\
+              msvcp*.dll|\
+              ucrtbase.dll|\
+              msvcrt.dll)
+                echo "Non-static runtime dependency: ${DLL}" >&2
+                BAD_DEPENDENCY=1
+                continue
+                ;;
+            esac
+
+            # Windows API-set DLLs are virtual/system contracts.
+            case "${DLL_LOWER}" in
+              api-ms-win-*.dll|ext-ms-win-*.dll)
+                continue
+                ;;
+            esac
+
+            # All remaining direct dependencies must be Windows system DLLs.
+            if [[ ! -f "/c/Windows/System32/${DLL}" ]]; then
+              echo "Non-system DLL dependency: ${DLL}" >&2
+              BAD_DEPENDENCY=1
+            fi
+          done
+
+          if [[ "${BAD_DEPENDENCY}" -ne 0 ]]; then
+            echo "The executable is not fully self-contained." >&2
+            exit 1
+          fi
+
+          echo "Direct imports contain only Windows system DLLs."
 
       - name: Upload single EXE artifact
         uses: actions/upload-artifact@v7
         with:
           name: MachineColorDesigner-Windows-x64-single-exe
-          path: dist/MachineColorDesigner.exe
+          path: |
+            dist/MachineColorDesigner.exe
+            dist/MachineColorDesigner.exe.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
-      - name: Publish EXE to GitHub Release for version tags
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
+  publish-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-windows-static
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: MachineColorDesigner-Windows-x64-single-exe
+          path: dist
+
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${{ github.ref_name }}" *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create "${{ github.ref_name }}" --generate-notes --title "${{ github.ref_name }}"
-          }
-          gh release upload "${{ github.ref_name }}" "dist/MachineColorDesigner.exe" --clobber
+          set -euo pipefail
+
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --title "${GITHUB_REF_NAME}"
+          fi
+
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/MachineColorDesigner.exe \
+            dist/MachineColorDesigner.exe.sha256 \
+            --clobber
